@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: label-studio
+    env: docker
+    repo: https://github.com/unnat5/label-studio
+    region: oregon
+    plan: free
+    dockerfilePath: Dockerfile
+    buildFilter:
+      paths:
+        - "**/*"
+    envVars:
+      - key: SKIP_VERSION_GEN
+        value: "true"
