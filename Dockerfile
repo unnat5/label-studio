@@ -48,9 +48,14 @@ RUN --mount=type=cache,target=${YARN_CACHE_FOLDER},sharing=locked \
 FROM frontend-builder AS frontend-version-generator
 RUN --mount=type=cache,target=${YARN_CACHE_FOLDER},sharing=locked \
     --mount=type=cache,target=${NX_CACHE_DIRECTORY},sharing=locked \
-    --mount=type=bind,source=.git,target=../.git \
-    yarn version:libs
-
+    # --mount=type=bind,source=.git,target=../.git \
+    # yarn version:libs
+# Skip version generation if in CI (Render)
+ARG SKIP_VERSION_GEN=false
+RUN if [ "$SKIP_VERSION_GEN" != "true" ]; then \
+      --mount=type=bind,source=.git,target=../.git \
+      yarn version:libs; \
+    fi
 ################################ Stage: venv-builder (prepare the virtualenv)
 FROM python:${PYTHON_VERSION}-slim AS venv-builder
 ARG POETRY_VERSION
@@ -68,6 +73,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 ADD https://install.python-poetry.org /tmp/install-poetry.py
 RUN python /tmp/install-poetry.py
+# RUN --mount=type=bind,source=.git,target=../.git \
+#     yarn version:libs
 
 RUN --mount=type=cache,target="/var/cache/apt",sharing=locked \
     --mount=type=cache,target="/var/lib/apt/lists",sharing=locked \
