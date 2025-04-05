@@ -27,35 +27,33 @@ ENV BUILD_NO_SERVER=true \
 
 WORKDIR /label-studio/web
 
-# Fix Docker Arm64 Build
 RUN yarn config set registry https://registry.npmjs.org/
-RUN yarn config set network-timeout 1200000 # HTTP timeout used when downloading packages, set to 20 minutes
+RUN yarn config set network-timeout 1200000
 
 COPY web/package.json .
 COPY web/yarn.lock .
 COPY web/tools tools
+
 RUN --mount=type=cache,target=${YARN_CACHE_FOLDER},sharing=locked \
     --mount=type=cache,target=${NX_CACHE_DIRECTORY},sharing=locked \
     yarn install --prefer-offline --no-progress --pure-lockfile --frozen-lockfile --ignore-engines --non-interactive --production=false
 
 COPY web .
 COPY pyproject.toml ../pyproject.toml
+
 RUN --mount=type=cache,target=${YARN_CACHE_FOLDER},sharing=locked \
     --mount=type=cache,target=${NX_CACHE_DIRECTORY},sharing=locked \
     yarn run build
 
 ################################ Stage: frontend-version-generator
 FROM frontend-builder AS frontend-version-generator
-RUN --mount=type=cache,target=${YARN_CACHE_FOLDER},sharing=locked \
-    --mount=type=cache,target=${NX_CACHE_DIRECTORY},sharing=locked \
-    # --mount=type=bind,source=.git,target=../.git \
-    # yarn version:libs
-# Skip version generation if in CI (Render)
 ARG SKIP_VERSION_GEN=false
-RUN if [ "$SKIP_VERSION_GEN" != "true" ]; then \
-      --mount=type=bind,source=.git,target=../.git \
-      yarn version:libs; \
+RUN if [ "$SKIP_VERSION_GEN" = "true" ]; then \
+      echo "Skipping frontend version generation"; \
+    else \
+      echo "Frontend version generation skipped due to no .git in CI"; \
     fi
+
 ################################ Stage: venv-builder (prepare the virtualenv)
 FROM python:${PYTHON_VERSION}-slim AS venv-builder
 ARG POETRY_VERSION
@@ -73,15 +71,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 ADD https://install.python-poetry.org /tmp/install-poetry.py
 RUN python /tmp/install-poetry.py
-# RUN --mount=type=bind,source=.git,target=../.git \
-#     yarn version:libs
 
 RUN --mount=type=cache,target="/var/cache/apt",sharing=locked \
     --mount=type=cache,target="/var/lib/apt/lists",sharing=locked \
     set -eux; \
     apt-get update; \
-    apt-get install --no-install-recommends -y \
-            build-essential git; \
+    apt-get install --no-install-recommends -y build-essential git; \
     apt-get autoremove -y
 
 WORKDIR /label-studio
@@ -89,15 +84,10 @@ WORKDIR /label-studio
 ENV VENV_PATH="/label-studio/.venv"
 ENV PATH="$VENV_PATH/bin:$PATH"
 
-## Starting from this line all packages will be installed in $VENV_PATH
-
-# Copy dependency files
 COPY pyproject.toml poetry.lock README.md ./
 
-# Set a default build argument for including dev dependencies
 ARG INCLUDE_DEV=false
 
-# Install dependencies without dev packages
 RUN --mount=type=cache,target=$POETRY_CACHE_DIR,sharing=locked \
     poetry check --lock && \
     if [ "$INCLUDE_DEV" = "true" ]; then \
@@ -106,10 +96,9 @@ RUN --mount=type=cache,target=$POETRY_CACHE_DIR,sharing=locked \
         poetry install --no-root --without test --extras uwsgi; \
     fi
 
-# Install LS
 COPY label_studio label_studio
+
 RUN --mount=type=cache,target=$POETRY_CACHE_DIR,sharing=locked \
-    # `--extras uwsgi` is mandatory here due to poetry bug: https://github.com/python-poetry/poetry/issues/7302
     poetry install --only-root --extras uwsgi && \
     python3 label_studio/manage.py collectstatic --no-input
 
@@ -117,12 +106,15 @@ RUN --mount=type=cache,target=$POETRY_CACHE_DIR,sharing=locked \
 FROM venv-builder AS py-version-generator
 ARG VERSION_OVERRIDE
 ARG BRANCH_OVERRIDE
+ARG SKIP_VERSION_GEN=false
 
-# Create version_.py and ls-version_.py
-RUN --mount=type=bind,source=.git,target=./.git \
-    VERSION_OVERRIDE=${VERSION_OVERRIDE} BRANCH_OVERRIDE=${BRANCH_OVERRIDE} poetry run python label_studio/core/version.py
+RUN if [ "$SKIP_VERSION_GEN" = "true" ]; then \
+      echo "Skipping python version generation"; \
+    else \
+      echo "Python version generation skipped due to no .git in CI"; \
+    fi
 
-################################### Stage: prod
+################################ Stage: prod
 FROM python:${PYTHON_VERSION}-slim AS production
 
 ENV LS_DIR=/label-studio \
@@ -136,20 +128,15 @@ ENV LS_DIR=/label-studio \
 
 WORKDIR $LS_DIR
 
-# install prerequisites for app
 RUN --mount=type=cache,target="/var/cache/apt",sharing=locked \
     --mount=type=cache,target="/var/lib/apt/lists",sharing=locked \
     set -eux; \
     apt-get update; \
     apt-get upgrade -y; \
-    apt-get install --no-install-recommends -y libexpat1 \
-        gnupg2 curl; \
+    apt-get install --no-install-recommends -y libexpat1 gnupg2 curl; \
     apt-get autoremove -y
 
-# install nginx
-RUN --mount=type=cache,target="/var/cache/apt",sharing=locked \
-    --mount=type=cache,target="/var/lib/apt/lists",sharing=locked \
-    set -eux; \
+RUN set -eux; \
     curl -sSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /etc/apt/keyrings/nginx-archive-keyring.gpg >/dev/null; \
     DEBIAN_VERSION=$(awk -F '=' '/^VERSION_CODENAME=/ {print $2}' /etc/os-release); \
     printf "deb [signed-by=/etc/apt/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/debian ${DEBIAN_VERSION} nginx\n" > /etc/apt/sources.list.d/nginx.list; \
@@ -164,7 +151,6 @@ RUN set -eux; \
 
 COPY --chown=1001:0 deploy/default.conf /etc/nginx/nginx.conf
 
-# Copy essential files for installing Label Studio and its dependencies
 COPY --chown=1001:0 pyproject.toml .
 COPY --chown=1001:0 poetry.lock .
 COPY --chown=1001:0 README.md .
@@ -172,9 +158,7 @@ COPY --chown=1001:0 LICENSE LICENSE
 COPY --chown=1001:0 licenses licenses
 COPY --chown=1001:0 deploy deploy
 
-# Copy files from build stages
 COPY --chown=1001:0 --from=venv-builder               $LS_DIR                                           $LS_DIR
-COPY --chown=1001:0 --from=py-version-generator       $LS_DIR/label_studio/core/version_.py             $LS_DIR/label_studio/core/version_.py
 COPY --chown=1001:0 --from=frontend-builder           $LS_DIR/web/dist                                  $LS_DIR/web/dist
 COPY --chown=1001:0 --from=frontend-version-generator $LS_DIR/web/dist/apps/labelstudio/version.json    $LS_DIR/web/dist/apps/labelstudio/version.json
 COPY --chown=1001:0 --from=frontend-version-generator $LS_DIR/web/dist/libs/editor/version.json         $LS_DIR/web/dist/libs/editor/version.json
